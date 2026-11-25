@@ -54,6 +54,19 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
 The first build downloads the Android SDK and Gradle, about 1–2 GB, so it takes a while. Later builds reuse `.build-cache/`.
 
+### Signed release build
+
+```sh
+./make-signing-key.sh        # once: creates ~/.android-signing/cardputerzero-remote/
+./build-apk.sh release       # → android/app/build/outputs/apk/release/app-release.apk
+```
+
+The key and its password are stored outside the repo, and `.gitignore` blocks `*.jks` and `keystore.properties`. **Back up `~/.android-signing/cardputerzero-remote/`.** Android only installs an update over an existing install when both are signed with the same key. If you lose the key, users must uninstall before they can update.
+
+Before publishing an update, raise `versionCode` and `versionName` in `android/app/build.gradle.kts`.
+
+A release-signed APK won't install over a debug build, or the other way round. Uninstall the old one first; that resets the app's saved addresses.
+
 ## 3. Use it
 
 1. Open **Cardputer Remote** and tap **Scan**. The list shows each way to reach the device ("Wi-Fi 192.168.x.x" or "Bluetooth F0:40:…"). You can also type an IP or a Bluetooth address.
