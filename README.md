@@ -40,6 +40,7 @@ Options go in `/etc/default/cpz-remote`, for example:
 - `CPZ_ARGS="--pin 1234"` requires a PIN.
 - `--no-bluetooth` turns Bluetooth off.
 - `--bt-hidden` keeps the device from showing up in Bluetooth scans. Phones that already know its address can still connect.
+- `--keymap none` sends plain US key codes for symbols. By default, symbols are sent the way the built-in keyboard's Sym layer sends them, using the codes listed in `/usr/share/keymaps/tca8418_keypad_m5stack_keymap.map`. On that keyboard, `.` is code 91, not the US code 52, which device apps read as `*`.
 
 Run `sudo systemctl restart cpz-remote` after changing it. `cpz_remote.py --help` lists all options.
 
@@ -88,6 +89,7 @@ A release-signed APK won't install over a debug build, or the other way round. U
 - **The screen shows but a key does nothing.** Run `--dump-keys` and press that key on the real keyboard, then compare the code with the table in `android/app/src/main/java/cc/cpz/remote/KeyMap.kt`.
   - Keys the built-in keyboard can't produce are sent automatically through a virtual (uinput) keyboard.
   - `CPZ_ARGS="--uinput"` sends every key that way.
+- **A symbol comes out as a different one** (for example `.` types `*`). Check that the daemon log shows `symbols mapped from …tca8418_keypad_m5stack_keymap.map`.
 - **Wrong colours.** The app reads the pixel format from the device. If the colours still look swapped, report the output of `cpz_remote.py --info`.
 
 ## Security

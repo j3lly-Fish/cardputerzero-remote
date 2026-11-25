@@ -12,6 +12,9 @@ Protocol (same over TCP and Bluetooth RFCOMM, big-endian):
                    zlib(pixels of rows y0..y0+rows-1); the first frame is always full
                    b"P" keepalive ping (sent when the screen is idle)
   phone -> device  b"K" u16 linux_keycode, u8 value (1 = down, 0 = up)
+                   Codes are US-layout; symbol keys are translated to what the built-in
+                   keyboard's Sym layer sends (see KEYMAP_FILE), so apps on the device
+                   read them as the same character.
 Discovery: UDP broadcast b"CPZ?" is answered with b"CPZ! <name>[\tbt=<mac>]"; over
 Bluetooth the device is discoverable and offers the RFCOMM service BT_UUID.
 """
@@ -33,6 +36,8 @@ UDP_PORT = 7879
 UINPUT_NAME = "cpz-remote virtual keyboard"
 BT_UUID = "6c1f8b52-4a2e-4f0c-9d3a-c2b0e5a7f001"
 BT_CHANNEL = 22
+# The vendor's table of what the built-in keyboard's Sym layer codes mean ("keycode 91 = period").
+KEYMAP_FILE = "/usr/share/keymaps/tca8418_keypad_m5stack_keymap.map"
 
 EV_SYN, EV_KEY = 0, 1
 SYN_REPORT = 0
@@ -79,6 +84,53 @@ def _key_names():
 
 
 KEY_NAMES = _key_names()
+
+# US layout: the symbol keys' (plain, shifted) characters. Shift+digit is left alone:
+# the device's apps read it the same way as a US keyboard does.
+US_SYMBOLS = {12: "-_", 13: "=+", 26: "[{", 27: "]}", 39: ";:", 40: "'\"", 41: "`~",
+              43: "\\|", 51: ",<", 52: ".>", 53: "/?"}
+SHIFT_CODES = (42, 54)
+KEYSYM_CHARS = {
+    "exclam": "!", "at": "@", "numbersign": "#", "dollar": "$", "percent": "%",
+    "asciicircum": "^", "ampersand": "&", "asterisk": "*", "parenleft": "(", "parenright": ")",
+    "asciitilde": "~", "grave": "`", "underscore": "_", "minus": "-", "plus": "+", "equal": "=",
+    "bracketleft": "[", "bracketright": "]", "braceleft": "{", "braceright": "}",
+    "semicolon": ";", "colon": ":", "apostrophe": "'", "quotedbl": '"', "less": "<",
+    "greater": ">", "backslash": "\\", "bar": "|", "comma": ",", "period": ".", "slash": "/",
+    "question": "?",
+}
+
+
+def load_symbol_codes(path):
+    """Character -> code the built-in keyboard sends for it, from lines like "keycode 91 = period"."""
+    codes = {}
+    with open(path) as f:
+        for line in f:
+            w = line.split("#")[0].split()
+            if len(w) >= 4 and w[0] == "keycode" and w[2] == "=" and w[3] in KEYSYM_CHARS and w[1].isdigit():
+                codes.setdefault(KEYSYM_CHARS[w[3]], int(w[1]))
+    return codes
+
+
+class KeyTranslator:
+    """Per session: maps the app's US key codes to the built-in keyboard's codes."""
+
+    def __init__(self, symbols):
+        self.symbols = symbols
+        self.shift = set()
+        self.down = {}  # app code -> device code sent on key down
+
+    def __call__(self, code, value):
+        if code in SHIFT_CODES:
+            (self.shift.add if value else self.shift.discard)(code)
+        if not value:
+            return self.down.pop(code, code)
+        out = code
+        pair = US_SYMBOLS.get(code)
+        if pair and self.symbols:
+            out = self.symbols.get(pair[1 if self.shift else 0], code)
+        self.down[code] = out
+        return out
 
 
 _log_lock = threading.Lock()
@@ -250,9 +302,10 @@ def recv_exact(conn, n):
 
 
 class Server:
-    def __init__(self, fb, keys, pin="", fps=20):
+    def __init__(self, fb, keys, pin="", fps=20, symbols=None):
         self.fb = fb
         self.keys = keys
+        self.symbols = symbols or {}
         self.pin = pin
         self.period = 1.0 / max(1, fps)
         self.lock = threading.Lock()
@@ -298,6 +351,7 @@ class Server:
         stop = threading.Event()
         threading.Thread(target=self.stream, args=(conn, stop, zlevel), daemon=True).start()
         held = set()
+        translate = KeyTranslator(self.symbols)
         try:
             while not stop.is_set():
                 msg = recv_exact(conn, 4)
@@ -305,6 +359,7 @@ class Server:
                     break
                 code, value = struct.unpack(">HB", msg[1:])
                 if 0 < code < KEY_CNT and value in (0, 1):
+                    code = translate(code, value)
                     self.keys.send(code, value)
                     (held.add if value else held.discard)(code)
         except OSError:
@@ -533,6 +588,8 @@ def main():
     ap.add_argument("--fb-geometry", metavar="WxHxBPP", help="skip fb ioctls (testing with a plain file)")
     ap.add_argument("--input", help="keyboard evdev node (default: auto-detect)")
     ap.add_argument("--uinput", action="store_true", help="inject through a uinput virtual keyboard only")
+    ap.add_argument("--keymap", default=KEYMAP_FILE,
+                    help="built-in keyboard's symbol table (default %(default)s); 'none' sends plain US codes")
     ap.add_argument("--info", action="store_true", help="print framebuffer and keyboard info, then exit")
     ap.add_argument("--dump-keys", action="store_true", help="print codes of keys pressed on the device")
     a = ap.parse_args()
@@ -562,11 +619,18 @@ def main():
         return
 
     keys = KeyInjector(a.input, a.uinput)
+    symbols = {}
+    if a.keymap != "none":
+        try:
+            symbols = load_symbol_codes(a.keymap)
+            log("keyboard: %d symbols mapped from %s" % (len(symbols), a.keymap))
+        except OSError as e:
+            log("keyboard: no symbol table (%s), sending US codes" % e.strerror)
     if not a.no_discovery:
         threading.Thread(target=discovery, args=(a.udp_port, a.name), daemon=True).start()
     if a.pin:
         log("PIN required")
-    server = Server(fb, keys, a.pin, a.fps)
+    server = Server(fb, keys, a.pin, a.fps, symbols)
     if not a.no_bluetooth:
         threading.Thread(target=bluetooth, args=(server, not a.bt_hidden), daemon=True).start()
     server.serve(a.port)
