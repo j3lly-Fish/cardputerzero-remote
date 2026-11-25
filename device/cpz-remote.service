@@ -1,0 +1,13 @@
+[Unit]
+Description=CardputerZero Remote (screen + keyboard over Wi-Fi and Bluetooth)
+After=network.target bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+EnvironmentFile=-/etc/default/cpz-remote
+ExecStart=/usr/bin/python3 -u /usr/local/bin/cpz_remote.py $CPZ_ARGS
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
